@@ -365,6 +365,133 @@ fn supplied_diagram_preserves_connections_with_few_crossings_in_every_direction(
 }
 
 #[test]
+fn zero_vertical_gap_packs_disjoint_horizontal_connections() {
+    for source in [
+        "flowchart TB\nA[Alpha] --> B[Bravo]\nA --> C[Charlie]",
+        "flowchart TB\nB[Bravo] --> A[Alpha]\nC[Charlie] --> A",
+    ] {
+        let diagram = parse(source).unwrap();
+        for direction in [Direction::Tb, Direction::Bt] {
+            for padding in [0, 2] {
+                let canvas = render(
+                    &diagram,
+                    &RenderOptions {
+                        direction: Some(direction),
+                        gap: 0,
+                        padding,
+                        ..RenderOptions::default()
+                    },
+                )
+                .unwrap();
+                let text = canvas.to_text(false, false, Theme::Mono);
+                assert_eq!(
+                    canvas.height(),
+                    7,
+                    "{direction:?}, padding {padding}: two layers of boxes need only one routing row\n{text}"
+                );
+                assert_eq!(point_junctions(&text), 2, "{text}");
+                assert!(!text.contains(['┼', '╋', '╬']), "{text}");
+                for label in ["Alpha", "Bravo", "Charlie"] {
+                    assert!(text.contains(label), "{text}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn compact_routing_preserves_wrapped_labels_styles_and_explicit_endings() {
+    let diagram = parse("flowchart TB\nA[ALPHA] -.->|ONE<br>TWO| B[BRAVO]\nA ==>|WIDE LABEL| C[CHARLIE]\nB o--o D[DELTA]\nC x--x D\nD -->|RETURN| A").unwrap();
+    for direction in [Direction::Tb, Direction::Bt, Direction::Lr, Direction::Rl] {
+        for border in [
+            Border::Rounded,
+            Border::Square,
+            Border::Double,
+            Border::Heavy,
+            Border::Ascii,
+        ] {
+            for padding in [0, 1] {
+                let options = RenderOptions {
+                    direction: Some(direction),
+                    border,
+                    gap: 0,
+                    padding,
+                    ..RenderOptions::default()
+                };
+                let canvas = render(&diagram, &options).unwrap();
+                let text = canvas.to_text(false, false, Theme::Mono);
+                for label in [
+                    "ALPHA",
+                    "BRAVO",
+                    "CHARLIE",
+                    "DELTA",
+                    "ONE",
+                    "TWO",
+                    "WIDE LABEL",
+                    "RETURN",
+                ] {
+                    assert!(
+                        text.contains(label),
+                        "{direction:?} {border:?}: missing {label}\n{text}"
+                    );
+                }
+                let (circle, cross) = if border == Border::Ascii {
+                    ('o', 'x')
+                } else {
+                    ('○', '×')
+                };
+                assert_eq!(text.matches(circle).count(), 2, "{text}");
+                assert_eq!(text.matches(cross).count(), 2, "{text}");
+                if matches!(border, Border::Rounded | Border::Square) {
+                    // The thick connection also weights its source junction.
+                    assert_eq!(point_junctions(&text), 4, "{text}");
+                    assert!(text.contains(['━', '┃']), "lost thick connection\n{text}");
+                    assert!(text.contains(['┄', '┆']), "lost dotted connection\n{text}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn supplied_graph_packs_connections_and_labels_into_shared_rows() {
+    let text = plain(
+        include_str!("../assets/example.mermaid"),
+        &RenderOptions {
+            gap: 0,
+            padding: 1,
+            ..RenderOptions::default()
+        },
+    );
+    let rows: Vec<_> = text.lines().collect();
+    let blocks = rows
+        .iter()
+        .position(|row| row.contains("F: blocks-engine"))
+        .unwrap();
+    let branches = rows
+        .iter()
+        .position(|row| row.contains("F: Assesment"))
+        .unwrap();
+    let routing_rows = branches - blocks - 3;
+    // Uploader's two right-going edges precede four nested right-going
+    // branches from blocks-engine. The left-going branches share those lanes.
+    assert_eq!(routing_rows, 6, "the fanout needs six shared lanes\n{text}");
+    let web = rows
+        .iter()
+        .position(|row| row.contains("F: web — Admin / Study"))
+        .unwrap();
+    assert_eq!(
+        blocks - web - 3,
+        1,
+        "SCORM and the independent web-to-blocks bend can share a routing row\n{text}"
+    );
+    assert!(
+        rows.len() <= 41,
+        "unnecessary rows remain in the supplied graph\n{text}"
+    );
+}
+
+#[test]
 fn zero_vertical_gap_compacts_the_supplied_graph_after_routing() {
     let diagram = parse(include_str!("../assets/example.mermaid")).unwrap();
     let marazmatic::model::DiagramKind::Graph(graph) = &diagram.kind else {

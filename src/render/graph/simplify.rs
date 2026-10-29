@@ -3,7 +3,7 @@
 
 use super::{layout::Layout, *};
 
-fn compact(points: &[Point]) -> Vec<Point> {
+pub(super) fn compact(points: &[Point]) -> Vec<Point> {
     let mut result: Vec<Point> = Vec::new();
     for &point in points {
         if result.last() == Some(&point) {

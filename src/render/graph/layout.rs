@@ -9,7 +9,7 @@ pub(super) struct Layout {
     pub label_anchors: Vec<Option<Point>>,
 }
 
-fn ranks(graph: &Graph) -> Vec<usize> {
+pub(super) fn ranks(graph: &Graph) -> Vec<usize> {
     // A DFS removes feedback edges only for ranking. They are still routed and
     // rendered, so cycles and self loops preserve their original semantics.
     fn visit(
@@ -579,10 +579,31 @@ pub(super) fn layout(graph: &Graph, options: &RenderOptions) -> Layout {
         &initial_positions,
         &mut attachments,
     );
+    let mut vertex_ranks = vec![0; centers.len()];
+    let mut empty_routing_ranks = vec![false; layers.order.len()];
+    for (r, row) in layers.order.iter().enumerate() {
+        for &node in row {
+            vertex_ranks[node] = r;
+        }
+        empty_routing_ranks[r] = r % 2 == 1 && row.iter().all(|&node| main_sizes[node] == 0);
+    }
+    // An empty routing rank guides ordering, but need not split a connection
+    // into independently scheduled bends on either side of a virtual waypoint.
+    let routing_chains: Vec<Vec<_>> = layers
+        .chains
+        .iter()
+        .map(|chain| {
+            chain
+                .iter()
+                .copied()
+                .filter(|&node| !empty_routing_ranks[vertex_ranks[node]])
+                .collect()
+        })
+        .collect();
     let (lanes, counts) = channels(
         graph,
-        &rank,
-        &layers.chains,
+        &vertex_ranks,
+        &routing_chains,
         &initial_positions,
         &attachments,
         horizontal,
@@ -601,15 +622,19 @@ pub(super) fn layout(graph: &Graph, options: &RenderOptions) -> Layout {
             continue;
         }
         let mut stops = vec![attachments[i].1];
-        stops.extend(layers.chains[i].iter().map(|&n| positions[n]));
+        stops.extend(routing_chains[i].iter().map(|&n| positions[n]));
         stops.push(attachments[i].2);
         routes[i].push(stops[0]);
+        let mut from = edge.from;
         for (leg, pair) in stops.windows(2).enumerate() {
-            let lane = bands[rank[edge.from] + leg] + lanes[i][leg];
+            let lane = bands[vertex_ranks[from]] + lanes[i][leg];
             if horizontal {
                 routes[i].extend([(lane, pair[0].1), (lane, pair[1].1), pair[1]]);
             } else {
                 routes[i].extend([(pair[0].0, lane), (pair[1].0, lane), pair[1]]);
+            }
+            if let Some(&node) = routing_chains[i].get(leg) {
+                from = node;
             }
         }
     }
@@ -693,6 +718,7 @@ fn channels(
         stops.extend(chains[i].iter().map(|&n| positions[n]));
         stops.push(ports[i].2);
         slots[i] = vec![0; stops.len() - 1];
+        let mut from = edge.from;
         for (leg, pair) in stops.windows(2).enumerate() {
             let (a, b) = if horizontal {
                 (pair[0].1, pair[1].1)
@@ -700,7 +726,10 @@ fn channels(
                 (pair[0].0, pair[1].0)
             };
             if a != b {
-                groups[rank[edge.from] + leg].push((i, leg, a, b));
+                groups[rank[from]].push((i, leg, a, b));
+            }
+            if let Some(&node) = chains[i].get(leg) {
+                from = node;
             }
         }
     }

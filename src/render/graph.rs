@@ -8,6 +8,7 @@ use super::*;
 type Point = (usize, usize);
 
 mod layout;
+mod pack;
 mod simplify;
 
 fn ports(from: &BoxNode, to: &BoxNode, direction: Direction) -> (Point, Point, Point, Point) {
@@ -283,11 +284,11 @@ impl Router {
         path: &[Point],
         lines: &[TextLine],
         anchor: Option<Point>,
-    ) -> Result<(), RenderError> {
+    ) -> Result<Point, RenderError> {
         let width = lines.iter().map(label_width).max().unwrap_or(0);
         let height = lines.len();
         if width == 0 {
-            return Ok(());
+            return Ok(anchor.unwrap_or_default());
         }
         let path_cells: HashSet<_> = path.iter().copied().collect();
         let mut points: Vec<_> = path.iter().enumerate().collect();
@@ -333,7 +334,7 @@ impl Router {
             for (row, line) in lines.iter().enumerate() {
                 draw_label(canvas, px - label_width(line) / 2, y + row, line);
             }
-            return Ok(());
+            return Ok((px, py));
         }
         Err(RenderError(
             "not enough room for an edge label; increase --gap, shorten labels, or use --no-labels"
@@ -357,7 +358,7 @@ pub(super) fn render(graph: &Graph, options: &RenderOptions) -> Result<Canvas, R
             "invalid graph or diagram limits exceeded".into(),
         ));
     }
-    let layout = layout::layout(graph, options);
+    let mut layout = layout::layout(graph, options);
     let mut canvas = checked_canvas(layout.width, layout.height, options.border)?;
     let area = layout.width * layout.height;
     let mut router = Router {
@@ -427,7 +428,7 @@ pub(super) fn render(graph: &Graph, options: &RenderOptions) -> Result<Canvas, R
     let mut markers = Vec::new();
     let mut paths = vec![Vec::new(); graph.edges.len()];
     let mut label_anchors = layout.label_anchors.clone();
-    for i in order {
+    for &i in &order {
         let edge = &graph.edges[i];
         let (source, start, end, target) = all_ports[i];
         let detour = if options.edge_labels && layout.routes[i].is_empty() && !edge.label.is_empty()
@@ -517,7 +518,7 @@ pub(super) fn render(graph: &Graph, options: &RenderOptions) -> Result<Canvas, R
     if options.edge_labels {
         for (i, (edge, path)) in graph.edges.iter().zip(&paths).enumerate() {
             if !edge.label.is_empty() {
-                router
+                let anchor = router
                     .label(
                         &mut canvas,
                         path,
@@ -530,6 +531,7 @@ pub(super) fn render(graph: &Graph, options: &RenderOptions) -> Result<Canvas, R
                             graph.nodes[edge.from].id, graph.nodes[edge.to].id
                         ))
                     })?;
+                label_anchors[i] = Some(anchor);
             }
         }
     }
@@ -537,8 +539,78 @@ pub(super) fn render(graph: &Graph, options: &RenderOptions) -> Result<Canvas, R
         arrow(&mut canvas, p, direction, marker, options);
     }
     Ok(if options.vertical_gap() == 0 {
+        layout.routes = paths.iter().map(|path| simplify::compact(path)).collect();
+        layout.label_anchors = label_anchors;
+        if pack::vertical(&mut layout, graph, options, &layout::ranks(graph)) {
+            canvas = paint(&layout, graph, options, &order)?;
+        }
         canvas.compact_vertical()
     } else {
         canvas
     })
+}
+
+fn paint(
+    layout: &layout::Layout,
+    graph: &Graph,
+    options: &RenderOptions,
+    order: &[usize],
+) -> Result<Canvas, RenderError> {
+    let mut canvas = checked_canvas(layout.width, layout.height, options.border)?;
+    for (i, node) in layout.nodes.iter().enumerate() {
+        draw_node(&mut canvas, node, i, options);
+    }
+    for &i in order {
+        let edge = &graph.edges[i];
+        let (source, start, end, target) = layout.ports[i];
+        canvas.attach(
+            source,
+            start,
+            edge.stroke == Stroke::Thick || edge.start == Arrow::Point,
+        );
+        canvas.attach(
+            target,
+            end,
+            edge.stroke == Stroke::Thick || edge.end == Arrow::Point,
+        );
+        for pair in layout.routes[i].windows(2) {
+            canvas.line(pair[0], pair[1], Role::Edge, edge.stroke);
+        }
+    }
+    if options.edge_labels {
+        for (edge, anchor) in graph.edges.iter().zip(&layout.label_anchors) {
+            if edge.label.is_empty() {
+                continue;
+            }
+            let Some((x, y)) = *anchor else {
+                continue;
+            };
+            let lines = wrap(&edge.label, options.node_width, Emphasis::ITALIC);
+            let width = lines.iter().map(label_width).max().unwrap_or(0);
+            let top = y - lines.len() / 2;
+            canvas.blank_rect(x - width / 2, top, width, lines.len());
+            for (row, line) in lines.iter().enumerate() {
+                draw_label(&mut canvas, x - label_width(line) / 2, top + row, line);
+            }
+        }
+    }
+    for &i in order {
+        let edge = &graph.edges[i];
+        let (source, start, end, target) = layout.ports[i];
+        for (point, border, marker) in [(end, target, edge.end), (start, source, edge.start)] {
+            if matches!(marker, Arrow::Circle | Arrow::Cross) {
+                arrow(
+                    &mut canvas,
+                    point,
+                    (
+                        border.0 as isize - point.0 as isize,
+                        border.1 as isize - point.1 as isize,
+                    ),
+                    marker,
+                    options,
+                );
+            }
+        }
+    }
+    Ok(canvas)
 }

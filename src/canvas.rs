@@ -289,27 +289,58 @@ impl Canvas {
             && (y..y + height).all(|row| (x..x + width).all(|col| self.is_blank(col, row)))
     }
 
-    /// Close unused vertical space after graph routing. Removing a whole row
-    /// of straight edges preserves their columns, bends, crossings, and styles.
+    /// Close unused vertical space after graph routing. Disjoint horizontal
+    /// runs can share a row when their connecting vertical stems stay separate.
     pub(crate) fn compact_vertical(mut self) -> Self {
-        let keep: Vec<_> = self
-            .cells
-            .chunks(self.width)
-            .map(|row| {
-                row.iter().any(|cell| {
-                    !cell.glyph.trim().is_empty()
-                        || cell.continuation
-                        || (cell.connections != 0
-                            && (cell.role != Role::Edge || cell.connections & (LEFT | RIGHT) != 0))
-                })
-            })
-            .collect();
-        let mut index = 0;
-        self.cells.retain(|_| {
-            let retain = keep[index / self.width];
-            index += 1;
-            retain
-        });
+        let mut packed: Vec<Cell> = Vec::with_capacity(self.cells.len());
+        let mut previous_edges = false;
+        for row in self.cells.chunks(self.width) {
+            let edges = row.iter().all(|cell| {
+                cell.glyph.trim().is_empty()
+                    && !cell.continuation
+                    && (cell.connections == 0 || cell.role == Role::Edge)
+            });
+            if edges
+                && row
+                    .iter()
+                    .all(|cell| cell.connections & (LEFT | RIGHT) == 0)
+            {
+                continue;
+            }
+            if edges && previous_edges {
+                let start = packed.len() - self.width;
+                let previous = &mut packed[start..];
+                let compatible = previous.iter().zip(row).all(|(upper, lower)| {
+                    if upper.connections == 0 || lower.connections == 0 {
+                        return true;
+                    }
+                    // Contract only an existing vertical connection. Otherwise
+                    // merging the cells would join separate edges or add a crossing.
+                    upper.connections & DOWN != 0
+                        && lower.connections & UP != 0
+                        && (upper.connections & (LEFT | RIGHT) == 0
+                            || lower.connections & (LEFT | RIGHT) == 0)
+                        && upper.stroke == lower.stroke
+                        && upper.border == lower.border
+                });
+                if compatible {
+                    for (upper, lower) in previous.iter_mut().zip(row) {
+                        let connections = (upper.connections & !DOWN) | (lower.connections & !UP);
+                        let heavy =
+                            (upper.heavy_connections & !DOWN) | (lower.heavy_connections & !UP);
+                        if upper.connections & (LEFT | RIGHT) == 0 {
+                            upper.clone_from(lower);
+                        }
+                        upper.connections = connections;
+                        upper.heavy_connections = heavy;
+                    }
+                    continue;
+                }
+            }
+            packed.extend_from_slice(row);
+            previous_edges = edges;
+        }
+        self.cells = packed;
         self.height = self.cells.len() / self.width;
         if self.height == 0 {
             return Self::new(self.width, 1, self.border);
@@ -604,6 +635,73 @@ pub fn wrap(text: &str, width: usize, base: Emphasis) -> Vec<TextLine> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vertical_compaction_preserves_edge_styles_and_existing_crossings() {
+        for (first, second) in [
+            (Stroke::Solid, Stroke::Solid),
+            (Stroke::Dashed, Stroke::Thick),
+        ] {
+            let mut canvas = Canvas::new(16, 4, Border::Rounded);
+            canvas.text(10, 0, "top", Role::Text, Emphasis::default());
+            canvas.text(10, 3, "end", Role::Text, Emphasis::default());
+            for (points, stroke) in [
+                ([(1, 0), (1, 1), (3, 1), (3, 3)], first),
+                ([(6, 0), (6, 2), (8, 2), (8, 3)], second),
+            ] {
+                for pair in points.windows(2) {
+                    canvas.line(pair[0], pair[1], Role::Edge, stroke);
+                }
+            }
+            if first == second {
+                canvas.line((7, 0), (7, 3), Role::Edge, first);
+            }
+            let canvas = canvas.compact_vertical();
+            let text = canvas.to_text(false, false, Theme::Mono);
+            assert_eq!(canvas.height(), 3, "{text}");
+            if first == second {
+                assert_eq!(text.matches('┼').count(), 1, "{text}");
+            } else {
+                assert!(text.contains('┄') && text.contains('━'), "{text}");
+                assert!(!text.contains(['┼', '╋']), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn vertical_compaction_keeps_overlapping_horizontal_runs_separate() {
+        let mut canvas = Canvas::new(16, 4, Border::Rounded);
+        canvas.text(10, 0, "top", Role::Text, Emphasis::default());
+        canvas.text(10, 3, "end", Role::Text, Emphasis::default());
+        for points in [
+            [(1, 0), (1, 1), (5, 1), (5, 3)],
+            [(3, 0), (3, 2), (7, 2), (7, 3)],
+        ] {
+            for pair in points.windows(2) {
+                canvas.line(pair[0], pair[1], Role::Edge, Stroke::Solid);
+            }
+        }
+        let original = canvas.to_text(false, false, Theme::Mono);
+        assert_eq!(
+            canvas.compact_vertical().to_text(false, false, Theme::Mono),
+            original
+        );
+    }
+
+    #[test]
+    fn vertical_compaction_keeps_labels_and_explicit_markers_between_bends() {
+        for (glyph, role) in [("○", Role::Edge), ("×", Role::Edge), ("你好", Role::Label)] {
+            let mut canvas = Canvas::new(16, 3, Border::Rounded);
+            canvas.line((1, 0), (3, 0), Role::Edge, Stroke::Solid);
+            canvas.line((6, 2), (8, 2), Role::Edge, Stroke::Solid);
+            canvas.text(10, 1, glyph, role, Emphasis::ITALIC);
+            let original = canvas.to_text(false, false, Theme::Mono);
+            assert_eq!(
+                canvas.compact_vertical().to_text(false, false, Theme::Mono),
+                original
+            );
+        }
+    }
 
     #[test]
     fn cjk_emoji_and_combining_marks_align_and_clip() {
