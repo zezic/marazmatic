@@ -54,7 +54,7 @@ struct Cli {
     border: Border,
 
     /// Terminal color palette.
-    #[arg(long, value_enum, default_value = "ocean", global = true)]
+    #[arg(long, value_enum, default_value = "mono", global = true)]
     theme: Theme,
 
     /// ANSI color policy. Auto respects NO_COLOR, TERM=dumb, and redirection.
