@@ -42,29 +42,23 @@ impl Border {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub enum Theme {
-    Ocean,
-    Ember,
-    Forest,
     #[default]
+    Ansi,
     Mono,
 }
 
 impl Theme {
     pub fn name(self) -> &'static str {
         match self {
-            Self::Ocean => "ocean",
-            Self::Ember => "ember",
-            Self::Forest => "forest",
+            Self::Ansi => "ansi",
             Self::Mono => "mono",
         }
     }
 
     pub fn next(self) -> Self {
         match self {
-            Self::Ocean => Self::Ember,
-            Self::Ember => Self::Forest,
-            Self::Forest => Self::Mono,
-            Self::Mono => Self::Ocean,
+            Self::Ansi => Self::Mono,
+            Self::Mono => Self::Ansi,
         }
     }
 }
@@ -74,7 +68,12 @@ pub struct RenderOptions {
     pub border: Border,
     pub theme: Theme,
     pub direction: Option<Direction>,
+    /// Minimum spacing between graph node borders, unless overridden below.
     pub gap: usize,
+    /// Minimum columns between graph node borders; `None` uses `gap`.
+    pub horizontal_gap: Option<usize>,
+    /// Minimum rows between graph node borders; `None` uses `gap`.
+    pub vertical_gap: Option<usize>,
     pub node_width: usize,
     pub padding: usize,
     pub edge_labels: bool,
@@ -84,13 +83,25 @@ impl Default for RenderOptions {
     fn default() -> Self {
         Self {
             border: Border::Rounded,
-            theme: Theme::Mono,
+            theme: Theme::Ansi,
             direction: None,
             gap: 2,
+            horizontal_gap: None,
+            vertical_gap: None,
             node_width: 26,
             padding: 2,
             edge_labels: true,
         }
+    }
+}
+
+impl RenderOptions {
+    pub fn horizontal_gap(&self) -> usize {
+        self.horizontal_gap.unwrap_or(self.gap)
+    }
+
+    pub fn vertical_gap(&self) -> usize {
+        self.vertical_gap.unwrap_or(self.gap)
     }
 }
 
@@ -117,12 +128,18 @@ pub(super) fn checked_canvas(
 
 /// Render deterministically, without terminal IO or ANSI escape sequences.
 pub fn render(diagram: &Diagram, options: &RenderOptions) -> Result<Canvas, RenderError> {
-    if !(2..=12).contains(&options.gap)
+    if [
+        options.gap,
+        options.horizontal_gap(),
+        options.vertical_gap(),
+    ]
+    .iter()
+    .any(|gap| *gap > 12)
         || !(8..=80).contains(&options.node_width)
         || options.padding > 3
     {
         return Err(RenderError(
-            "options require gap 2..12, node width 8..80, and padding 0..3".into(),
+            "options require gaps 0..12, node width 8..80, and padding 0..3".into(),
         ));
     }
     let canvas = match &diagram.kind {
@@ -204,7 +221,7 @@ pub(super) fn box_node(label: &str, shape: Shape, options: &RenderOptions) -> Bo
     let (width, height) = if matches!(shape, Shape::Start | Shape::End) {
         (1, 1)
     } else {
-        ((width + extra).max(7), height)
+        ((width + extra).max(3), height)
     };
     BoxNode {
         x: 0,

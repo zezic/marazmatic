@@ -24,7 +24,7 @@ enum OutputMode {
     version,
     about = "Mermaid diagrams, beautifully rendered in your terminal",
     long_about = "Render Mermaid flowcharts, sequence diagrams, and state diagrams using terminal-native box drawing. Use `live FILE` to watch a file and tune rendering with hotkeys.",
-    after_help = "Examples:\n  marazmatic diagram.mmd\n  marazmatic live diagram.mmd\n  marazmatic diagram.mmd --plain --border double\n  cat diagram.mmd | marazmatic --ascii\n  marazmatic diagram.mmd -o diagram.txt\n\nLive hotkeys: b borders, t theme, c colors, s styles, d direction, +/- spacing,\n              [/] label width, p padding, v labels, arrows pan, ? help, q quit."
+    after_help = "Examples:\n  marazmatic diagram.mmd\n  marazmatic live diagram.mmd\n  marazmatic diagram.mmd --plain --border double\n  cat diagram.mmd | marazmatic --ascii\n  marazmatic diagram.mmd -o diagram.txt\n\nLive hotkeys: b borders, t theme, c colors, s styles, d direction, m center,\n              +/- spacing, x/X horizontal gap, y/Y vertical gap, [/] label width,\n              p padding, v labels, arrows pan, ? help, q quit."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -36,6 +36,10 @@ struct Cli {
     /// Open the interactive viewer (equivalent to `live FILE`).
     #[arg(short, long, global = true)]
     live: bool,
+
+    /// Start the live viewer aligned to the top-left instead of centered.
+    #[arg(long, global = true)]
+    no_center: bool,
 
     /// Write the full diagram to a file.
     #[arg(short, long, global = true, value_name = "FILE")]
@@ -53,8 +57,8 @@ struct Cli {
     #[arg(long, value_enum, default_value = "rounded", global = true)]
     border: Border,
 
-    /// Terminal color palette.
-    #[arg(long, value_enum, default_value = "mono", global = true)]
+    /// Color assignment using the terminal's ANSI palette.
+    #[arg(long, value_enum, default_value = "ansi", global = true)]
     theme: Theme,
 
     /// ANSI color policy. Auto respects NO_COLOR, TERM=dumb, and redirection.
@@ -74,8 +78,16 @@ struct Cli {
     direction: Option<Direction>,
 
     /// Space between nodes and ranks.
-    #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u8).range(2..=12), global = true)]
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=12), global = true)]
     gap: u8,
+
+    /// Horizontal space between nodes (defaults to --gap).
+    #[arg(long, value_parser = clap::value_parser!(u8).range(0..=12), global = true)]
+    horizontal_gap: Option<u8>,
+
+    /// Vertical space between nodes (defaults to --gap).
+    #[arg(long, value_parser = clap::value_parser!(u8).range(0..=12), global = true)]
+    vertical_gap: Option<u8>,
 
     /// Wrap label text at this many terminal columns.
     #[arg(long, default_value_t = 26, value_parser = clap::value_parser!(u8).range(8..=80), global = true)]
@@ -134,6 +146,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         theme: cli.theme,
         direction: cli.direction,
         gap: cli.gap.into(),
+        horizontal_gap: cli.horizontal_gap.map(usize::from),
+        vertical_gap: cli.vertical_gap.map(usize::from),
         node_width: cli.node_width.into(),
         padding: cli.padding.into(),
         edge_labels: !cli.no_labels,
@@ -184,7 +198,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 "live mode requires a cursor-addressable terminal (TERM cannot be dumb)".into(),
             );
         }
-        tui::run(file, options, color, accents)?;
+        tui::run(file, options, color, accents, !cli.no_center)?;
         return Ok(());
     }
     let source = read_source(&file).map_err(|e| format!("{}: {e}", file.display()))?;

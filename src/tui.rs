@@ -66,9 +66,10 @@ impl Drop for TerminalGuard {
 struct App {
     path: PathBuf,
     options: RenderOptions,
-    initial: (RenderOptions, bool, bool),
+    initial: (RenderOptions, bool, bool, bool),
     colors: bool,
     accents: bool,
+    centered: bool,
     diagram: Option<Diagram>,
     canvas: Option<Canvas>,
     source: Option<String>,
@@ -84,6 +85,35 @@ struct App {
 }
 
 impl App {
+    fn new(
+        path: PathBuf,
+        options: RenderOptions,
+        colors: bool,
+        accents: bool,
+        centered: bool,
+    ) -> Self {
+        Self {
+            path,
+            initial: (options.clone(), colors, accents, centered),
+            options,
+            colors,
+            accents,
+            centered,
+            diagram: None,
+            canvas: None,
+            source: None,
+            source_error: None,
+            render_error: None,
+            status: "Watching file".into(),
+            revision: 0,
+            pan: (0, 0),
+            initial_view: true,
+            watch: true,
+            sidebar: true,
+            help: false,
+        }
+    }
+
     fn reload(&mut self, force: bool) -> bool {
         match super::read_source(&self.path) {
             Ok(source) => {
@@ -199,6 +229,12 @@ impl App {
             KeyCode::Tab => self.sidebar = !self.sidebar,
             KeyCode::Char('c') => self.colors = !self.colors,
             KeyCode::Char('s') => self.accents = !self.accents,
+            KeyCode::Char('m') => {
+                self.centered = !self.centered;
+                self.pan = (0, 0);
+                self.initial_view = true;
+                self.status = format!("Centering {}", on_off(self.centered));
+            }
             KeyCode::Char('t') => self.options.theme = self.options.theme.next(),
             KeyCode::Char('b') => {
                 self.options.border = self.options.border.next();
@@ -230,12 +266,38 @@ impl App {
                     rebuild = true;
                 }
             }
-            KeyCode::Char('+') | KeyCode::Char('=') => {
-                self.options.gap = (self.options.gap + 1).min(12);
+            KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char('-') => {
+                let delta = if key.code == KeyCode::Char('-') {
+                    -1
+                } else {
+                    1
+                };
+                self.options.gap = adjust_gap(self.options.gap, delta);
+                self.options.horizontal_gap = self
+                    .options
+                    .horizontal_gap
+                    .map(|gap| adjust_gap(gap, delta));
+                self.options.vertical_gap =
+                    self.options.vertical_gap.map(|gap| adjust_gap(gap, delta));
                 rebuild = true;
             }
-            KeyCode::Char('-') => {
-                self.options.gap = self.options.gap.saturating_sub(1).max(2);
+            KeyCode::Char('x') | KeyCode::Char('X') => {
+                let delta = if key.code == KeyCode::Char('x') {
+                    -1
+                } else {
+                    1
+                };
+                self.options.horizontal_gap =
+                    Some(adjust_gap(self.options.horizontal_gap(), delta));
+                rebuild = true;
+            }
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let delta = if key.code == KeyCode::Char('y') {
+                    -1
+                } else {
+                    1
+                };
+                self.options.vertical_gap = Some(adjust_gap(self.options.vertical_gap(), delta));
                 rebuild = true;
             }
             KeyCode::Char(']') => {
@@ -289,7 +351,9 @@ impl App {
                 self.options = self.initial.0.clone();
                 self.colors = self.initial.1;
                 self.accents = self.initial.2;
+                self.centered = self.initial.3;
                 self.pan = (0, 0);
+                self.initial_view = true;
                 self.status = "Restored startup settings".into();
                 rebuild = true;
             }
@@ -299,6 +363,39 @@ impl App {
             self.rebuild();
         }
         false
+    }
+
+    fn viewport_size(&self, columns: usize, rows: usize) -> (usize, usize) {
+        let panel_width = if self.sidebar && columns >= 104 {
+            31
+        } else {
+            0
+        };
+        (
+            columns.saturating_sub(panel_width + 2),
+            rows.saturating_sub(9),
+        )
+    }
+
+    fn mouse(&mut self, kind: MouseEventKind, columns: usize, rows: usize) -> bool {
+        if self.help || columns < 46 || rows < 14 {
+            return false;
+        }
+        let Some(canvas) = &self.canvas else {
+            return false;
+        };
+        let previous = self.pan;
+        match kind {
+            MouseEventKind::ScrollDown => self.pan.1 = self.pan.1.saturating_add(3),
+            MouseEventKind::ScrollUp => self.pan.1 = self.pan.1.saturating_sub(3),
+            MouseEventKind::ScrollRight => self.pan.0 = self.pan.0.saturating_add(3),
+            MouseEventKind::ScrollLeft => self.pan.0 = self.pan.0.saturating_sub(3),
+            _ => return false,
+        }
+        let viewport = self.viewport_size(columns, rows);
+        self.pan.0 = self.pan.0.min(canvas.width().saturating_sub(viewport.0));
+        self.pan.1 = self.pan.1.min(canvas.height().saturating_sub(viewport.1));
+        self.pan != previous
     }
 
     fn draw(&mut self, columns: usize, rows: usize) -> Canvas {
@@ -338,7 +435,7 @@ impl App {
         let panel_width = if sidebar { 31 } else { 0 };
         let main_width = columns - panel_width;
         let frame_height = rows - 7;
-        let viewport = (main_width - 2, frame_height - 2);
+        let viewport = self.viewport_size(columns, rows);
         screen.rect(
             0,
             3,
@@ -355,10 +452,11 @@ impl App {
         screen.text(2, 3, &caption, Role::Accent, Emphasis::default());
         if let Some(canvas) = &self.canvas {
             if self.initial_view {
-                if let Some(Diagram {
-                    kind: marazmatic::model::DiagramKind::Graph(graph),
-                    ..
-                }) = &self.diagram
+                if self.centered
+                    && let Some(Diagram {
+                        kind: marazmatic::model::DiagramKind::Graph(graph),
+                        ..
+                    }) = &self.diagram
                 {
                     if self
                         .options
@@ -375,7 +473,19 @@ impl App {
             }
             self.pan.0 = self.pan.0.min(canvas.width().saturating_sub(viewport.0));
             self.pan.1 = self.pan.1.min(canvas.height().saturating_sub(viewport.1));
-            screen.viewport((1, 4), canvas, self.pan, viewport);
+            let origin = if self.centered {
+                (
+                    1 + viewport.0.saturating_sub(canvas.width()) / 2,
+                    4 + viewport.1.saturating_sub(canvas.height()) / 2,
+                )
+            } else {
+                (1, 4)
+            };
+            let size = (
+                viewport.0.min(canvas.width()),
+                viewport.1.min(canvas.height()),
+            );
+            screen.viewport(origin, canvas, self.pan, size);
         } else {
             screen.text(
                 3,
@@ -415,7 +525,10 @@ impl App {
                 format!("c    Colors      {}", on_off(self.colors)),
                 format!("s    Accents     {}", on_off(self.accents)),
                 format!("d    Direction   {direction}"),
-                format!("+/-  Spacing     {}", self.options.gap),
+                format!("m    Center      {}", on_off(self.centered)),
+                format!("x/X  Horiz gap   {}", self.options.horizontal_gap()),
+                format!("y/Y  Vert gap    {}", self.options.vertical_gap()),
+                "+/-  Adjust both gaps".into(),
                 format!("[/]  Label width {}", self.options.node_width),
                 format!("p    Padding     {}", self.options.padding),
                 format!("v    Labels      {}", on_off(self.options.edge_labels)),
@@ -453,7 +566,7 @@ impl App {
             role,
             Emphasis::default(),
         );
-        let hints = "b borders  t theme  c color  s style  d direction  +/- gap  ? help  q quit";
+        let hints = "m center  x/X horizontal  y/Y vertical  +/- spacing  ? help  q quit";
         screen.text(
             1,
             rows - 2,
@@ -502,23 +615,23 @@ impl App {
 
     fn draw_help(&self, screen: &mut Canvas, columns: usize, rows: usize) {
         let width = 66.min(columns - 4);
-        let height = 24.min(rows - 2);
+        let height = 22.min(rows - 2);
         let x = (columns - width) / 2;
         let y = (rows - height) / 2;
         screen.blank_rect(x, y, width, height);
         screen.rect(x, y, width, height, Role::Accent, self.options.border);
         let lines = [
             "MARAZMATIC / live controls",
-            "",
-            "b       Cycle rounded / square / double / heavy / ASCII",
-            "a       Toggle ASCII borders and arrows",
-            "t       Cycle ocean / ember / forest / mono palette",
+            "b / a   Cycle borders / toggle ASCII drawing",
+            "t       Toggle ANSI / Mono colors",
             "c / s   Toggle color / font style accents separately",
             "d       Cycle auto / TB / LR / BT / RL (graphs)",
-            "+ / -   Increase / decrease node spacing",
+            "m       Toggle centering (enabled by default)",
+            "+ / -   Increase / decrease both spacing axes",
+            "x / X   Decrease / increase horizontal spacing",
+            "y / Y   Decrease / increase vertical spacing",
             "[ / ]   Decrease / increase label wrapping width",
             "p / v   Cycle node padding / toggle edge labels",
-            "",
             "arrows  Pan (also h j k l); Shift moves faster",
             "PgUp/Dn Scroll a page; g / G go to top / bottom",
             "Tab     Toggle the settings panel",
@@ -526,9 +639,7 @@ impl App {
             "e       Export entire diagram as plain text",
             "0       Restore startup settings and viewport",
             "q       Quit (also Ctrl+C)",
-            "",
-            "Save the source file to reload automatically.",
-            "Invalid edits keep the last good render visible.",
+            "Save to reload; invalid edits keep the last good render.",
             "? / Esc / Enter closes help",
         ];
         for (i, line) in lines.iter().take(height - 2).enumerate() {
@@ -545,6 +656,10 @@ impl App {
             );
         }
     }
+}
+
+fn adjust_gap(gap: usize, delta: isize) -> usize {
+    gap.saturating_add_signed(delta).min(12)
 }
 
 fn on_off(value: bool) -> &'static str {
@@ -570,27 +685,15 @@ fn truncate(text: &str, width: usize) -> String {
     result
 }
 
-pub fn run(path: PathBuf, options: RenderOptions, colors: bool, accents: bool) -> io::Result<()> {
+pub fn run(
+    path: PathBuf,
+    options: RenderOptions,
+    colors: bool,
+    accents: bool,
+    centered: bool,
+) -> io::Result<()> {
     let _guard = TerminalGuard::enter()?;
-    let mut app = App {
-        path,
-        initial: (options.clone(), colors, accents),
-        options,
-        colors,
-        accents,
-        diagram: None,
-        canvas: None,
-        source: None,
-        source_error: None,
-        render_error: None,
-        status: "Watching file".into(),
-        revision: 0,
-        pan: (0, 0),
-        initial_view: true,
-        watch: true,
-        sidebar: true,
-        help: false,
-    };
+    let mut app = App::new(path, options, colors, accents, centered);
     app.reload(true);
     let mut dirty = true;
     let mut last_check = Instant::now();
@@ -627,14 +730,7 @@ pub fn run(path: PathBuf, options: RenderOptions, colors: bool, accents: bool) -
                 }
                 Event::Resize(_, _) => dirty = true,
                 Event::Mouse(mouse) => {
-                    match mouse.kind {
-                        MouseEventKind::ScrollDown => app.pan.1 = app.pan.1.saturating_add(3),
-                        MouseEventKind::ScrollUp => app.pan.1 = app.pan.1.saturating_sub(3),
-                        MouseEventKind::ScrollRight => app.pan.0 = app.pan.0.saturating_add(3),
-                        MouseEventKind::ScrollLeft => app.pan.0 = app.pan.0.saturating_sub(3),
-                        _ => {}
-                    }
-                    dirty = true;
+                    dirty |= app.mouse(mouse.kind, columns.into(), rows.into());
                 }
                 _ => {}
             }
@@ -645,4 +741,168 @@ pub fn run(path: PathBuf, options: RenderOptions, colors: bool, accents: bool) -
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app(options: RenderOptions, centered: bool) -> App {
+        let mut app = App::new(
+            PathBuf::from("diagram.mmd"),
+            options,
+            false,
+            false,
+            centered,
+        );
+        app.diagram = Some(parse("flowchart TB\nA[Alpha]").unwrap());
+        app.rebuild();
+        app
+    }
+
+    fn assert_canvas_at(screen: &Canvas, canvas: &Canvas, origin: (usize, usize)) {
+        for y in 0..canvas.height() {
+            assert_eq!(
+                screen.row(
+                    y + origin.1,
+                    origin.0,
+                    canvas.width(),
+                    false,
+                    false,
+                    marazmatic::Theme::Mono
+                ),
+                canvas.row(y, 0, canvas.width(), false, false, marazmatic::Theme::Mono),
+            );
+        }
+    }
+
+    #[test]
+    fn centering_follows_resize_and_sidebar_and_can_be_toggled() {
+        let mut app = app(RenderOptions::default(), true);
+        let canvas = app.canvas.as_ref().unwrap().clone();
+        for (columns, rows, viewport) in [(120, 34, (87, 25)), (80, 24, (78, 15))] {
+            let screen = app.draw(columns, rows);
+            let origin = (
+                1 + (viewport.0 - canvas.width()) / 2,
+                4 + (viewport.1 - canvas.height()) / 2,
+            );
+            assert_canvas_at(&screen, &canvas, origin);
+        }
+        app.sidebar = false;
+        let screen = app.draw(120, 34);
+        assert_canvas_at(
+            &screen,
+            &canvas,
+            (
+                1 + (118 - canvas.width()) / 2,
+                4 + (25 - canvas.height()) / 2,
+            ),
+        );
+
+        app.key(KeyEvent::from(KeyCode::Char('m')), 25);
+        let screen = app.draw(120, 34);
+        assert!(!app.centered);
+        assert_canvas_at(&screen, &canvas, (1, 4));
+        app.key(KeyEvent::from(KeyCode::Char('m')), 25);
+        let screen = app.draw(120, 34);
+        assert_canvas_at(
+            &screen,
+            &canvas,
+            (
+                1 + (118 - canvas.width()) / 2,
+                4 + (25 - canvas.height()) / 2,
+            ),
+        );
+    }
+
+    #[test]
+    fn spacing_controls_are_independent_and_reset_restores_startup_settings() {
+        let options = RenderOptions {
+            gap: 4,
+            horizontal_gap: Some(7),
+            vertical_gap: Some(3),
+            ..RenderOptions::default()
+        };
+        let mut app = app(options.clone(), false);
+        for (key, gaps) in [
+            ('x', (6, 3)),
+            ('X', (7, 3)),
+            ('y', (7, 2)),
+            ('y', (7, 1)),
+            ('y', (7, 0)),
+            ('y', (7, 0)),
+            ('Y', (7, 1)),
+            ('+', (8, 2)),
+            ('-', (7, 1)),
+        ] {
+            app.key(KeyEvent::from(KeyCode::Char(key)), 25);
+            assert_eq!(
+                (app.options.horizontal_gap(), app.options.vertical_gap()),
+                gaps
+            );
+        }
+        app.key(KeyEvent::from(KeyCode::Char('m')), 25);
+        assert!(app.centered);
+        app.key(KeyEvent::from(KeyCode::Char('0')), 25);
+        assert_eq!(app.options, options);
+        assert!(!app.centered);
+        assert!(app.initial_view);
+    }
+
+    #[test]
+    fn live_controls_support_zero_gaps_and_zero_node_padding() {
+        let mut app = app(
+            RenderOptions {
+                gap: 1,
+                padding: 0,
+                ..RenderOptions::default()
+            },
+            true,
+        );
+        app.key(KeyEvent::from(KeyCode::Char('-')), 25);
+        assert_eq!(
+            (app.options.horizontal_gap(), app.options.vertical_gap()),
+            (0, 0)
+        );
+        assert!(app.render_error.is_none());
+        app.key(KeyEvent::from(KeyCode::Char('+')), 25);
+        for key in ['x', 'y', 'x', 'y'] {
+            app.key(KeyEvent::from(KeyCode::Char(key)), 25);
+        }
+        assert_eq!(
+            (app.options.horizontal_gap(), app.options.vertical_gap()),
+            (0, 0)
+        );
+        for padding in [1, 2, 3, 0] {
+            app.key(KeyEvent::from(KeyCode::Char('p')), 25);
+            assert_eq!(app.options.padding, padding);
+            assert!(app.render_error.is_none());
+        }
+    }
+
+    #[test]
+    fn mouse_redraws_only_when_scrolling_changes_the_visible_viewport() {
+        let mut app = app(RenderOptions::default(), true);
+        app.canvas = Some(Canvas::new(200, 100, Border::Rounded));
+        assert!(!app.mouse(MouseEventKind::Moved, 120, 34));
+        assert!(!app.mouse(MouseEventKind::ScrollUp, 120, 34));
+        assert!(!app.mouse(MouseEventKind::ScrollLeft, 120, 34));
+        assert!(app.mouse(MouseEventKind::ScrollDown, 120, 34));
+        assert!(app.mouse(MouseEventKind::ScrollRight, 120, 34));
+        assert_eq!(app.pan, (3, 3));
+
+        app.pan = (112, 74);
+        assert!(app.mouse(MouseEventKind::ScrollDown, 120, 34));
+        assert!(app.mouse(MouseEventKind::ScrollRight, 120, 34));
+        assert_eq!(app.pan, (113, 75));
+        assert!(!app.mouse(MouseEventKind::ScrollDown, 120, 34));
+        assert!(!app.mouse(MouseEventKind::ScrollRight, 120, 34));
+
+        app.help = true;
+        assert!(!app.mouse(MouseEventKind::ScrollUp, 120, 34));
+        assert_eq!(app.pan, (113, 75));
+        app.help = false;
+        assert!(!app.mouse(MouseEventKind::ScrollUp, 40, 10));
+        assert_eq!(app.pan, (113, 75));
+    }
 }

@@ -220,7 +220,7 @@ fn offsets(row: &[usize], sizes: &[usize], real_count: usize, gap: usize) -> Vec
     for i in 1..row.len() {
         let (a, b) = (row[i - 1], row[i]);
         let gap = if a >= real_count && b >= real_count {
-            2
+            gap.min(2)
         } else {
             gap
         };
@@ -231,7 +231,22 @@ fn offsets(row: &[usize], sizes: &[usize], real_count: usize, gap: usize) -> Vec
 
 // Project desired neighbor centers onto non-overlapping ordered positions.
 // Pooling adjacent conflicts avoids pushing every later node to one side.
-fn align(row: &[usize], offsets: &[i64], desired: &[i64], centers: &mut [i64]) {
+fn align(row: &[usize], offsets: &[i64], desired: &[i64], centers: &mut [i64], tight: bool) {
+    if tight && !row.is_empty() {
+        // With zero spacing, move the packed layer as a whole instead of
+        // spreading its boxes out to match their neighbors' positions.
+        let mut starts: Vec<_> = row
+            .iter()
+            .enumerate()
+            .map(|(i, &node)| desired[node] - offsets[i])
+            .collect();
+        starts.sort_unstable();
+        let start = (starts[(starts.len() - 1) / 2] + starts[starts.len() / 2]).div_euclid(2);
+        for (i, &node) in row.iter().enumerate() {
+            centers[node] = start + offsets[i];
+        }
+        return;
+    }
     let mut groups: Vec<(usize, usize, i64)> = Vec::new();
     for (i, &node) in row.iter().enumerate() {
         groups.push((i, 1, desired[node] - offsets[i]));
@@ -264,6 +279,7 @@ fn align_centers(
     offsets: &[Vec<i64>],
     centers: &mut [i64],
     deltas: Option<&PortOffsets>,
+    tight: bool,
 ) {
     for pass in 0..12 {
         let downward = pass % 2 == 0;
@@ -301,14 +317,51 @@ fn align_centers(
                         .div_euclid(2);
                 }
             }
-            align(&layers.order[r], &offsets[r], &desired, centers);
+            align(&layers.order[r], &offsets[r], &desired, centers, tight);
         }
     }
+}
+
+fn rank_gaps(
+    layers: &Layers,
+    main_sizes: &[usize],
+    crowded_ports: &[bool],
+    gap: usize,
+    lanes: &[usize],
+) -> Vec<usize> {
+    lanes
+        .iter()
+        .enumerate()
+        .map(|(rank, &count)| {
+            let label_size = layers.order.get(rank / 2 * 2 + 1).map_or(0, |row| {
+                row.iter().map(|&i| main_sizes[i]).max().unwrap_or(0)
+            });
+            let remaining = gap.saturating_sub(label_size);
+            let requested = if rank % 2 == 0 {
+                remaining.div_ceil(2)
+            } else {
+                remaining / 2
+            };
+            // Labels leave space for ports and arrowheads. Neighboring ports
+            // need another cell to approach around a label without clipping it.
+            let clearance = if label_size == 0 {
+                1
+            } else {
+                2 + usize::from(crowded_ports[rank + rank % 2])
+            };
+            requested.max(count + clearance)
+        })
+        .collect()
 }
 
 pub(super) fn layout(graph: &Graph, options: &RenderOptions) -> Layout {
     let direction = options.direction.unwrap_or(graph.direction);
     let horizontal = direction.horizontal();
+    let (main_gap, cross_gap) = if horizontal {
+        (options.horizontal_gap(), options.vertical_gap())
+    } else {
+        (options.vertical_gap(), options.horizontal_gap())
+    };
     let mut nodes: Vec<_> = graph
         .nodes
         .iter()
@@ -328,16 +381,30 @@ pub(super) fn layout(graph: &Graph, options: &RenderOptions) -> Layout {
             continue;
         }
         let ports = outgoing[i].max(incoming[i]);
-        if horizontal {
-            node.height = node.height.max(ports * 2 + 1);
+        let port_extent = if cross_gap == 0 {
+            ports + 2
         } else {
-            node.width = node.width.max(ports * 2 + 1);
+            ports * 2 + 1
+        };
+        if horizontal {
+            node.height = node.height.max(port_extent);
+        } else {
+            node.width = node.width.max(port_extent);
         }
     }
     let mut layers = Layers::new(graph, &rank);
     layers.order();
+    let crowded_ports: Vec<_> = layers
+        .order
+        .iter()
+        .map(|row| {
+            row.iter()
+                .any(|&i| i < nodes.len() && outgoing[i].max(incoming[i]) > 1)
+        })
+        .collect();
     let mut sizes = vec![1usize; layers.before.len()];
-    let mut main_sizes = vec![1usize; sizes.len()];
+    // Unlabeled routing vertices do not consume a row or column of their own.
+    let mut main_sizes = vec![0usize; sizes.len()];
     for (i, node) in nodes.iter().enumerate() {
         sizes[i] = cross_size(node, horizontal);
         main_sizes[i] = if horizontal { node.width } else { node.height };
@@ -364,7 +431,6 @@ pub(super) fn layout(graph: &Graph, options: &RenderOptions) -> Layout {
             }
         }
     }
-    let cross_gap = options.gap + if horizontal { 2 } else { 4 };
     let offsets: Vec<_> = layers
         .order
         .iter()
@@ -377,7 +443,7 @@ pub(super) fn layout(graph: &Graph, options: &RenderOptions) -> Layout {
             centers[node] = offsets[i] - middle;
         }
     }
-    align_centers(&layers, &offsets, &mut centers, None);
+    align_centers(&layers, &offsets, &mut centers, None, cross_gap == 0);
     let label_lines: Vec<_> = graph
         .edges
         .iter()
@@ -390,7 +456,7 @@ pub(super) fn layout(graph: &Graph, options: &RenderOptions) -> Layout {
         .map(label_width)
         .max()
         .unwrap_or(0);
-    let margin = max_label_width.max(8) + options.gap + 3;
+    let margin = max_label_width.max(8) + options.horizontal_gap().max(options.vertical_gap()) + 3;
     let place = |nodes: &mut [BoxNode], gaps: &[usize], centers: &[i64]| {
         let min_cross = centers
             .iter()
@@ -422,7 +488,9 @@ pub(super) fn layout(graph: &Graph, options: &RenderOptions) -> Layout {
                     node.y = positions[i].1 - node.height / 2;
                 }
             }
-            bands.push(main + main_size + 1);
+            // Bends leaving a real node follow its outside port. Bends after
+            // a virtual rank can start in the first available cell.
+            bands.push(main + main_size + usize::from(r % 2 == 0));
             main += main_size + gaps[r];
         }
         let extent = nodes
@@ -439,7 +507,13 @@ pub(super) fn layout(graph: &Graph, options: &RenderOptions) -> Layout {
     } else {
         Direction::Tb
     };
-    let initial_gaps = vec![options.gap + 3; layers.order.len()];
+    let initial_gaps = rank_gaps(
+        &layers,
+        &main_sizes,
+        &crowded_ports,
+        main_gap,
+        &vec![0; layers.order.len()],
+    );
     let (mut initial_positions, _, _, _) = place(&mut nodes, &initial_gaps, &centers);
     let mut attachments: Vec<_> = graph
         .edges
@@ -485,7 +559,13 @@ pub(super) fn layout(graph: &Graph, options: &RenderOptions) -> Layout {
             previous = node;
         }
     }
-    align_centers(&layers, &offsets, &mut centers, Some(&deltas));
+    align_centers(
+        &layers,
+        &offsets,
+        &mut centers,
+        Some(&deltas),
+        cross_gap == 0,
+    );
     (initial_positions, _, _, _) = place(&mut nodes, &initial_gaps, &centers);
     attachments = graph
         .edges
@@ -507,10 +587,7 @@ pub(super) fn layout(graph: &Graph, options: &RenderOptions) -> Layout {
         &attachments,
         horizontal,
     );
-    let gaps: Vec<_> = counts
-        .iter()
-        .map(|&count| (options.gap.div_ceil(2) + 1).max(count + 3))
-        .collect();
+    let gaps = rank_gaps(&layers, &main_sizes, &crowded_ports, main_gap, &counts);
     let (mut positions, bands, main_extent, cross_extent) = place(&mut nodes, &gaps, &centers);
     attachments = graph
         .edges
@@ -786,6 +863,55 @@ fn distribute_ports(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_cross_gap_uses_adjacent_ports_without_extra_box_padding() {
+        let source = (0..9).fold("flowchart LR\n".to_owned(), |mut source, i| {
+            source.push_str(&format!("Root --> N{i}\n"));
+            source
+        });
+        let diagram = crate::parse(&source).unwrap();
+        let DiagramKind::Graph(graph) = &diagram.kind else {
+            unreachable!()
+        };
+        let result = layout(
+            graph,
+            &RenderOptions {
+                vertical_gap: Some(0),
+                ..RenderOptions::default()
+            },
+        );
+        let root = &result.nodes[0];
+        assert_eq!(
+            root.height, 11,
+            "nine ports need nine rows plus two border rows"
+        );
+        let mut rows: Vec<_> = result.ports.iter().map(|ports| ports.0.1).collect();
+        rows.sort_unstable();
+        assert!(rows.windows(2).all(|pair| pair[1] == pair[0] + 1));
+    }
+
+    #[test]
+    fn zero_cross_gap_packs_boxes_even_when_their_parents_are_far_apart() {
+        let diagram = crate::parse("flowchart LR\nR1[\"one<br>two<br>three<br>four<br>five<br>six\"] --> A[Alpha]\nR2[\"one<br>two<br>three<br>four<br>five<br>six\"] --> B[Bravo]").unwrap();
+        let DiagramKind::Graph(graph) = &diagram.kind else {
+            unreachable!()
+        };
+        let result = layout(
+            graph,
+            &RenderOptions {
+                vertical_gap: Some(0),
+                ..RenderOptions::default()
+            },
+        );
+        let index = |id: &str| graph.nodes.iter().position(|node| node.id == id).unwrap();
+        let (a, b) = (&result.nodes[index("A")], &result.nodes[index("B")]);
+        assert_eq!(
+            a.bottom() + 1,
+            b.y,
+            "zero gap must not stretch the child layer to match its parents"
+        );
+    }
 
     fn bends(points: &[Point]) -> usize {
         let directions: Vec<_> = points

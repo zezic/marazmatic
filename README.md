@@ -9,7 +9,7 @@ flowchart LR
 
 ```text
 ╭───────────────╮            ╭───────────╮            ╭───────────────╮
-│ Write Mermaid ├───────────╼┥ Render it ├───────────╼┥ Make it yours │
+│ Write Mermaid ├────────────┥ Render it ├────────────┥ Make it yours │
 ╰───────────────╯            ╰───────────╯            ╰───────────────╯
 ```
 
@@ -29,7 +29,7 @@ Once installed:
 marazmatic assets/example.mermaid
 marazmatic live assets/example.mermaid
 marazmatic --live assets/sequence.mmd
-marazmatic assets/state.mmd --border double --theme ember
+marazmatic assets/state.mmd --border double --theme mono
 marazmatic assets/flowchart.mmd --direction TB --gap 6
 ```
 
@@ -56,12 +56,12 @@ marazmatic diagram.mmd --plain -o diagram.txt
 marazmatic diagram.mmd --color always --style always | less -RS
 ```
 
-Colors and accents are automatic on an interactive terminal. Pipes and output files default to plain Unicode text. `NO_COLOR` disables automatic colors when set to a nonempty value; `TERM=dumb` disables automatic colors and accents. `--plain` overrides both forced policies. `--ascii` changes drawing characters; source labels retain their original Unicode text.
+Colors and accents are automatic on an interactive terminal. Colored output uses the terminal's configured ANSI palette and default foreground/background, so it follows your terminal theme in both light and dark modes. Pipes and output files default to plain Unicode text. `NO_COLOR` disables automatic colors when set to a nonempty value; `TERM=dumb` disables automatic colors and accents. `--plain` overrides both forced policies. `--ascii` changes drawing characters; source labels retain their original Unicode text.
 
 Border styles: `rounded` (default), `square`, `double`, `heavy`, `ascii`.
-Palettes: `ocean` (default), `ember`, `forest`, `mono`.
+Color modes: `ansi` (default) uses the current terminal's ANSI palette; `mono` uses its default foreground.
 
-Unicode connection tips use `╼`, `╽`, `╾`, and `╿` for right, down, left, and up, with the heavy end facing the destination. The box border joins each tip with a matching junction, such as `╼┥`, preserving the box's border weight and color. ASCII drawing uses `>`, `v`, `<`, and `^` with `+` junctions.
+Graph connections meet box borders directly. Rounded and square boxes use weighted junctions such as `┥` and `┸` at directed endpoints. Explicit circle and cross endings use `○` and `×` (`o` and `x` in ASCII). Sequence messages use directional tips on their lifelines.
 
 Labels wrap by terminal display width. CJK, combining marks, and emoji clusters stay aligned. Edge labels, sequence messages, and note text use inverted colors with `🭮█label█🭬` decoration; ASCII drawing uses `[ label ]`. Edge and message labels are centered directly on their connector lines. Node text is bold and edge labels are italic when accents are enabled. Inline `**bold**`, `*italic*`, and backtick code (underlined) are also supported. Colors and styles disappear cleanly in plain output without changing the layout or decoration.
 
@@ -69,18 +69,35 @@ Labels wrap by terminal display width. CJK, combining marks, and emoji clusters 
 
 ```sh
 marazmatic live diagram.mmd
+
+# Set horizontal and vertical spacing independently.
+marazmatic live diagram.mmd --horizontal-gap 8 --vertical-gap 3
+
+# Start with the diagram aligned to the top-left.
+marazmatic live diagram.mmd --no-center
 ```
 
 Save the Mermaid file in your editor to update the view. The viewer checks for changes every 250 ms, supports atomic file replacement, and keeps the last good render visible while an edit is invalid or the file is temporarily missing. Initial parse errors also recover as soon as the file is fixed.
+
+Diagrams are centered in the available viewport by default, including after resizing or toggling the settings panel. Oversized graphs start at the beginning of their flow with the other axis centered. Toggle centering with `m`, or start with `--no-center`. Mouse movements, clicks, and scrolling at a viewport boundary leave an unchanged screen alone.
+
+Horizontal and vertical spacing can each be adjusted from 0–12. `--gap` sets both defaults; `--horizontal-gap` and `--vertical-gap` override their respective axes in live and one-shot rendering. The axes always refer to screen columns and rows, including after changing graph direction. For graphs, these values measure the minimum number of columns or rows between node borders. Labels and separate routing lanes may require more space. Sequence diagrams use horizontal spacing between participants and vertical spacing between messages.
+
+Zero graph spacing packs boxes within each layer and uses adjacent attachment points. A vertical gap of zero also removes rows that only extend vertical connections after routing, bringing boxes closer while retaining labels, explicit circle/cross endings, bends, and crossings.
+
+Use `--padding 0` to remove horizontal padding inside node boxes, or press `p` in live mode to cycle through padding values 0–3. For example: `marazmatic live diagram.mmd --padding 0 --gap 0`.
 
 | Key | Action |
 | --- | --- |
 | `b` | Cycle border styles |
 | `a` | Toggle ASCII drawing |
-| `t` | Cycle color palettes |
+| `t` | Toggle ANSI / Mono colors |
 | `c` / `s` | Toggle color / font style accents independently |
 | `d` | Cycle source direction / TB / LR / BT / RL for graphs |
-| `+` / `-` | Increase / decrease spacing (2–12) |
+| `m` | Toggle centering (enabled by default) |
+| `x` / `X` | Decrease / increase horizontal spacing (0–12) |
+| `y` / `Y` | Decrease / increase vertical spacing (0–12) |
+| `+` / `-` | Increase / decrease both spacing axes (0–12) |
 | `[` / `]` | Decrease / increase label wrap width (8–80 columns) |
 | `p` | Cycle horizontal node padding (0–3) |
 | `v` | Toggle edge / message labels |
@@ -124,8 +141,8 @@ use marazmatic::{parse, render, RenderOptions, Theme};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let diagram = parse("flowchart LR; A[Hello] --> B[Terminal]")?;
     let canvas = render(&diagram, &RenderOptions::default())?;
-    let plain = canvas.to_text(false, false, Theme::Ocean);
-    let ansi = canvas.to_text(true, true, Theme::Ocean);
+    let plain = canvas.to_text(false, false, Theme::Ansi);
+    let ansi = canvas.to_text(true, true, Theme::Ansi);
     print!("{plain}");
     Ok(())
 }
@@ -142,4 +159,4 @@ python3 tests/live_smoke.py
 cargo build --release
 ```
 
-The Python smoke test uses a real Unix pseudo-terminal and only the standard library. It covers rendering controls, independent colors and accents, help, invalid edits, atomic saves, deleted-file recovery, paused watching, exports, resize, quitting, Ctrl+C, and terminal restoration.
+The Python smoke test uses a real Unix pseudo-terminal and only the standard library. It covers centering, independent spacing controls, mouse reports that must not redraw, rendering controls, independent colors and accents, help, invalid edits, atomic saves, deleted-file recovery, paused watching, exports, resize, quitting, Ctrl+C, and terminal restoration.

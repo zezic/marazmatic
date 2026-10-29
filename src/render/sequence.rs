@@ -63,7 +63,10 @@ pub(super) fn render(sequence: &Sequence, options: &RenderOptions) -> Result<Can
                     } else {
                         text.clone()
                     };
-                    (text, if from == to { 4 } else { 2 } + options.gap / 2)
+                    (
+                        text,
+                        if from == to { 3 } else { 1 } + options.vertical_gap(),
+                    )
                 }
                 SequenceEvent::Note { text, .. } => (text.clone(), 4),
                 SequenceEvent::BlockStart { kind, text } => (format!("{kind}  {text}"), 2),
@@ -115,7 +118,11 @@ pub(super) fn render(sequence: &Sequence, options: &RenderOptions) -> Result<Can
     let mut centers = vec![left_margin + boxes[0].width / 2];
     for i in 1..count {
         centers.push(
-            centers[i - 1] + boxes[i - 1].width.div_ceil(2) + boxes[i].width / 2 + options.gap + 4,
+            centers[i - 1]
+                + boxes[i - 1].width.div_ceil(2)
+                + boxes[i].width / 2
+                + options.horizontal_gap()
+                + 4,
         );
     }
     for (event, position) in sequence.events.iter().zip(&events) {

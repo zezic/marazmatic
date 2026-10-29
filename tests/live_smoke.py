@@ -23,11 +23,11 @@ EXECUTABLE = str(Path(sys.argv[1] if len(sys.argv) > 1 else "target/debug/marazm
 
 
 class Session:
-    def __init__(self, path):
+    def __init__(self, path, *args):
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             os.environ["TERM"] = "xterm-256color"
-            os.execv(EXECUTABLE, [EXECUTABLE, "live", str(path), "--plain"])
+            os.execv(EXECUTABLE, [EXECUTABLE, "live", str(path), "--plain", *args])
         self.resize(120, 34)
         self.pending = b""
         self.output = b""
@@ -99,18 +99,30 @@ def main():
     with tempfile.TemporaryDirectory(prefix="marazmatic-live-") as directory:
         path = Path(directory) / "diagram.mmd"
         path.write_text("flowchart LR\nA[Alpha] -->|request| B[Bravo]\n")
-        session = Session(path)
+        session = Session(path, "--gap", "4")
         try:
             first = session.expect("revision 1")
             assert b"Alpha" in first and b"Bravo" in first
             assert not re.search(rb"\x1b\[[0-9;]*m", first), "--plain emitted SGR styles"
 
-            for key, text in [("b", "square"), ("t", "ember"), ("a", "ascii"), ("a", "rounded"), ("d", "TB"), ("+", "Spacing     5"), ("]", "Label width 28"), ("p", "Padding     2"), ("v", "Labels      off")]:
+            assert b"Center      on" in first, "centering was not enabled by default"
+            for report in ["35;15;10M", "0;15;10M", "32;16;10M", "0;16;10m", "64;15;10M", "65;15;10M", "66;15;10M", "67;15;10M"]:
+                session.send(f"\x1b[<{report}")
+                assert session.read(0.2) == b"", f"ignored mouse report {report!r} redrew an unchanged screen"
+
+            for key, text in [("m", "Center      off"), ("m", "Center      on"), ("b", "square"), ("t", "mono"), ("t", "ansi"), ("a", "ascii"), ("a", "rounded"), ("d", "TB"), ("+", "Horiz gap   5"), ("x", "Horiz gap   4"), ("X", "Horiz gap   5"), ("y", "Vert gap    4"), ("Y", "Vert gap    5"), ("]", "Label width 28"), ("p", "Padding     2"), ("v", "Labels      off")]:
                 session.send(key)
                 session.expect(text)
 
+            for key, text in [("p", "Padding     3"), ("p", "Padding     0"), ("xxxxx", "Horiz gap   0"), ("yyyyy", "Vert gap    0")]:
+                session.send(key)
+                frame = session.expect(text)
+                assert b"ERROR /" not in frame, "zero padding or spacing failed to render"
+
             session.send("c")
-            assert b"38;5;" in session.expect("Colors")
+            colored = session.expect("Colors")
+            assert re.search(rb"\x1b\[(?:[0-9]+;)*(?:3[0-7]|39|9[0-7])(?:;[0-9]+)*m", colored), "colors did not use the terminal ANSI palette"
+            assert b"38;5;" not in colored and b"38;2;" not in colored, "colors used a custom palette"
             session.send("c")
             session.expect("Colors")
             session.send("s")
@@ -120,6 +132,8 @@ def main():
 
             session.send("?")
             session.expect("live controls")
+            session.send("\x1b[<35;15;10M")
+            assert session.read(0.2) == b"", "mouse movement redrew help"
             session.send("\x1b")
             session.expect("CONTROLS")
 
@@ -165,15 +179,16 @@ def main():
             session.cleanup()
 
         path.write_text("flowchart LR\nA -->\n")
-        session = Session(path)
+        session = Session(path, "--no-center", "--padding", "0", "--gap", "0", "--horizontal-gap", "7", "--vertical-gap", "3")
         try:
-            session.expect("ERROR / line 2")
+            initial = session.expect("ERROR / line 2")
+            assert b"Center      off" in initial and b"Horiz gap   7" in initial and b"Vert gap    3" in initial
             path.write_text("flowchart LR\nA[Recovered] --> B[Initially invalid]\n")
             session.expect("revision 1")
             session.finish("\x03")
         finally:
             session.cleanup()
-    print("Live smoke checks passed: settings, styling, help, reload/recovery, watch pause, export, resize, quit/Ctrl+C, terminal restoration.")
+    print("Live smoke checks passed: centering, independent spacing, idle mouse, settings, styling, help, reload/recovery, watch pause, export, resize, quit/Ctrl+C, terminal restoration.")
 
 
 if __name__ == "__main__":

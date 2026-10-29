@@ -289,6 +289,34 @@ impl Canvas {
             && (y..y + height).all(|row| (x..x + width).all(|col| self.is_blank(col, row)))
     }
 
+    /// Close unused vertical space after graph routing. Removing a whole row
+    /// of straight edges preserves their columns, bends, crossings, and styles.
+    pub(crate) fn compact_vertical(mut self) -> Self {
+        let keep: Vec<_> = self
+            .cells
+            .chunks(self.width)
+            .map(|row| {
+                row.iter().any(|cell| {
+                    !cell.glyph.trim().is_empty()
+                        || cell.continuation
+                        || (cell.connections != 0
+                            && (cell.role != Role::Edge || cell.connections & (LEFT | RIGHT) != 0))
+                })
+            })
+            .collect();
+        let mut index = 0;
+        self.cells.retain(|_| {
+            let retain = keep[index / self.width];
+            index += 1;
+            retain
+        });
+        self.height = self.cells.len() / self.width;
+        if self.height == 0 {
+            return Self::new(self.width, 1, self.border);
+        }
+        self
+    }
+
     /// Trim unused outer columns and rows, retaining all grapheme continuations.
     pub fn trimmed(self) -> Self {
         let mut min_x = self.width;
@@ -388,33 +416,17 @@ pub fn ansi_style(
     let mut codes = Vec::new();
     if color {
         let palette = match theme {
-            Theme::Ocean => [81, 117, 147, 114, 215, 212],
-            Theme::Ember => [215, 209, 180, 203, 222, 174],
-            Theme::Forest => [114, 150, 108, 186, 80, 151],
-            Theme::Mono => [252, 250, 248, 255, 246, 253],
+            Theme::Ansi => [36, 32, 33, 34, 35, 31],
+            Theme::Mono => [39; 6],
         };
         let number = match role {
             Role::Node(i) => palette[i % palette.len()],
-            Role::Edge => {
-                if theme == Theme::Mono {
-                    245
-                } else {
-                    109
-                }
-            }
-            Role::Label | Role::LabelDecoration => {
-                if theme == Theme::Mono {
-                    250
-                } else {
-                    223
-                }
-            }
-            Role::Muted => 245,
+            Role::Edge | Role::Label | Role::LabelDecoration | Role::Text => 39,
+            Role::Muted => 90,
             Role::Accent => palette[0],
-            Role::Error => 203,
-            Role::Text => 253,
+            Role::Error => 31,
         };
-        codes.push(format!("38;5;{number}"));
+        codes.push(number.to_string());
         if role == Role::Label {
             codes.push("7".into());
         }
@@ -597,14 +609,14 @@ mod tests {
     fn cjk_emoji_and_combining_marks_align_and_clip() {
         let mut canvas = Canvas::new(12, 1, Border::Rounded);
         canvas.text(0, 0, "你👩‍💻e\u{301} OK", Role::Text, Emphasis::BOLD);
-        assert_eq!(canvas.row(0, 0, 4, false, false, Theme::Ocean), "你👩‍💻");
-        assert_eq!(canvas.row(0, 1, 2, false, false, Theme::Ocean), "  ");
+        assert_eq!(canvas.row(0, 0, 4, false, false, Theme::Ansi), "你👩‍💻");
+        assert_eq!(canvas.row(0, 1, 2, false, false, Theme::Ansi), "  ");
         assert_eq!(
-            canvas.row(0, 4, 4, false, false, Theme::Ocean),
+            canvas.row(0, 4, 4, false, false, Theme::Ansi),
             "e\u{301} OK"
         );
-        assert!(!canvas.to_text(false, false, Theme::Ocean).contains('\x1b'));
-        assert!(canvas.to_text(false, true, Theme::Ocean).contains(";1m"));
+        assert!(!canvas.to_text(false, false, Theme::Ansi).contains('\x1b'));
+        assert!(canvas.to_text(false, true, Theme::Ansi).contains(";1m"));
     }
 
     #[test]

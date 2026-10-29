@@ -430,27 +430,48 @@ pub(super) fn render(graph: &Graph, options: &RenderOptions) -> Result<Canvas, R
     for i in order {
         let edge = &graph.edges[i];
         let (source, start, end, target) = all_ports[i];
-        let detour = if options.edge_labels && edge.from == edge.to && !edge.label.is_empty() {
+        let detour = if options.edge_labels && layout.routes[i].is_empty() && !edge.label.is_empty()
+        {
             let lines = wrap(&edge.label, options.node_width, Emphasis::ITALIC);
             let width = lines.iter().map(label_width).max().unwrap_or(0);
             let dx = start.0 as isize - source.0 as isize;
             let dy = end.1 as isize - target.1 as isize;
-            let preferred = (
-                start
-                    .0
-                    .saturating_add_signed(dx * (width / 2 + options.gap + 2) as isize),
-                target
-                    .1
-                    .saturating_add_signed(dy * (lines.len() + options.gap + 2) as isize),
-            );
+            let (preferred, flow) = if edge.from == edge.to {
+                (
+                    (
+                        start.0.saturating_add_signed(
+                            dx * (width / 2 + options.horizontal_gap() + 2) as isize,
+                        ),
+                        target.1.saturating_add_signed(
+                            dy * (lines.len() + options.vertical_gap() + 2) as isize,
+                        ),
+                    ),
+                    (0, dy),
+                )
+            } else if direction.horizontal() {
+                // Feedback labels sit beyond the outside ports, where even
+                // narrow boxes leave room for the caption and its approach.
+                (
+                    (
+                        (start.0 + end.0) / 2,
+                        start.1.max(end.1) + lines.len() / 2 + 2,
+                    ),
+                    (if direction == Direction::Lr { -1 } else { 1 }, 0),
+                )
+            } else {
+                (
+                    (start.0.max(end.0) + width / 2 + 2, (start.1 + end.1) / 2),
+                    (0, if direction == Direction::Tb { -1 } else { 1 }),
+                )
+            };
             let anchor = router.detour_anchor(
                 preferred,
                 width,
                 lines.len(),
-                options.gap + width.max(lines.len()) + 2,
+                options.horizontal_gap().max(options.vertical_gap()) + width.max(lines.len()) + 2,
             );
             label_anchors[i] = Some(anchor);
-            Some((anchor, (0, dy)))
+            Some((anchor, flow))
         } else {
             None
         };
@@ -475,25 +496,20 @@ pub(super) fn render(graph: &Graph, options: &RenderOptions) -> Result<Canvas, R
         for segment in path.windows(2) {
             canvas.line(segment[0], segment[1], Role::Edge, edge.stroke);
         }
-        // Tips sit just outside the boxes and meet their weighted junctions.
         paths[i] = path;
-        markers.push((
-            end,
-            (
-                target.0 as isize - end.0 as isize,
-                target.1 as isize - end.1 as isize,
-            ),
-            edge.end,
-        ));
-        if edge.start != Arrow::None {
-            markers.push((
-                start,
-                (
-                    source.0 as isize - start.0 as isize,
-                    source.1 as isize - start.1 as isize,
-                ),
-                edge.start,
-            ));
+        // Point connections use the weighted border junction. Explicit circle
+        // and cross endings retain their distinct markers beside the border.
+        for (point, border, marker) in [(end, target, edge.end), (start, source, edge.start)] {
+            if matches!(marker, Arrow::Circle | Arrow::Cross) {
+                markers.push((
+                    point,
+                    (
+                        border.0 as isize - point.0 as isize,
+                        border.1 as isize - point.1 as isize,
+                    ),
+                    marker,
+                ));
+            }
         }
     }
     // Route first, then place labels where they cover only their own edge.
@@ -520,5 +536,9 @@ pub(super) fn render(graph: &Graph, options: &RenderOptions) -> Result<Canvas, R
     for (p, direction, marker) in markers {
         arrow(&mut canvas, p, direction, marker, options);
     }
-    Ok(canvas)
+    Ok(if options.vertical_gap() == 0 {
+        canvas.compact_vertical()
+    } else {
+        canvas
+    })
 }
