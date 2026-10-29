@@ -86,9 +86,9 @@ impl Default for RenderOptions {
             border: Border::Rounded,
             theme: Theme::Mono,
             direction: None,
-            gap: 4,
+            gap: 2,
             node_width: 26,
-            padding: 1,
+            padding: 2,
             edge_labels: true,
         }
     }
