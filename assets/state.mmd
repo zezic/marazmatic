@@ -1,0 +1,11 @@
+---
+title: From draft to done
+---
+stateDiagram-v2
+    direction LR
+    [*] --> Draft
+    state "In review" as Review
+    Draft --> Review: submit
+    Review --> Draft: revise
+    Review --> Published: approve
+    Published --> [*]

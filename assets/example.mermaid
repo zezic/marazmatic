@@ -1,0 +1,27 @@
+flowchart TB
+  W["F: web — Admin / Study"] --> B["F: blocks-engine"]
+  B --> A["F + E: Auth — forwarded"]
+  B --> N["F: Entity"]
+  B --> P["F: Progress"]
+  B --> US["F: Users — independently chosen endpoint"]
+  B --> AS["F: Assesment"]
+  B --> AN["F: Analytics"]
+  B --> SE["F: Search"]
+  B --> CE["F: Certificates"]
+  B --> EV["F/dev: Events"]
+  W -->|"SCORM"| U["F: Uploader"]
+  U --> A
+  U --> N
+  P -->|"tree snapshots"| N
+  N -->|"curator validation"| US
+  AS -.->|"enabled progress delivery"| P
+  SE -->|"FTS / facets / groups"| N
+  CE -->|"course / school"| N
+  CE -->|"recipient / issuer"| US
+  EV --> N
+  EV --> P
+  EV --> US
+  A --> RU["F + E: existing remote Users"]
+  A --> IDP["E: Keycloak / WB ID"]
+  US -.->|"supplier operations"| SG["E: Supplier Gateway"]
+

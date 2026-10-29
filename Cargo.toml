@@ -1,0 +1,19 @@
+[package]
+name = "marazmatic"
+version = "0.1.0"
+edition = "2024"
+description = "Mermaid diagrams, beautifully rendered in your terminal"
+license = "MIT"
+readme = "README.md"
+keywords = ["mermaid", "terminal", "ascii", "diagram", "tui"]
+categories = ["command-line-utilities", "visualization"]
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+crossterm = "0.29"
+unicode-segmentation = "1.13"
+unicode-width = "0.2"
+
+[profile.release]
+lto = "thin"
+strip = true

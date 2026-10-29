@@ -1,0 +1,19 @@
+---
+title: A small conversation
+---
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant A as API
+    participant D as Database
+    U->>+A: Sign in
+    A->>+D: Find account
+    D-->>-A: Account details
+    alt Account exists
+        A-->>U: Welcome back!
+    else Unknown account
+        A-->>U: Please register
+    end
+    A->>A: Update session
+    A-->>-U: All done
+    Note over U,D: Ready for the next request

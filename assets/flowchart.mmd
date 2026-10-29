@@ -1,0 +1,8 @@
+---
+title: Ship something good
+---
+flowchart LR
+    Idea([An idea]) --> Build[Build it]
+    Build --> Review{Tests pass?}
+    Review -->|yes| Ship([Ship it!])
+    Review -.->|try again| Build
