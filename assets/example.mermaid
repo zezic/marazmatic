@@ -1,15 +1,15 @@
 flowchart TB
-  W["F: web — Admin / Study"] --> B["F: blocks-engine"]
-  B --> A["F + E: Auth — forwarded"]
-  B --> N["F: Entity"]
-  B --> P["F: Progress"]
-  B --> US["F: Users — independently chosen endpoint"]
-  B --> AS["F: Assesment"]
-  B --> AN["F: Analytics"]
-  B --> SE["F: Search"]
-  B --> CE["F: Certificates"]
-  B --> EV["F/dev: Events"]
-  W -->|"SCORM"| U["F: Uploader"]
+  W["web — Admin / Study"] --> B["blocks-engine"]
+  B --> A["Auth — forwarded (remote k8s)"]
+  B --> N["Entity"]
+  B --> P["Progress"]
+  B --> US["Users — independently chosen endpoint"]
+  B --> AS["Assesment"]
+  B --> AN["Analytics"]
+  B --> SE["Search"]
+  B --> CE["Certificates"]
+  B --> EV["Events (origin/dev)"]
+  W -->|"SCORM"| U["Uploader"]
   U --> A
   U --> N
   P -->|"tree snapshots"| N
@@ -21,7 +21,6 @@ flowchart TB
   EV --> N
   EV --> P
   EV --> US
-  A --> RU["F + E: existing remote Users"]
-  A --> IDP["E: Keycloak / WB ID"]
-  US -.->|"supplier operations"| SG["E: Supplier Gateway"]
-
+  A --> RU["Users (remote k8s)"]
+  A --> IDP["Keycloak / WB ID (external)"]
+  US -.->|"supplier operations"| SG["Supplier Gateway (external)"]
