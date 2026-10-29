@@ -58,7 +58,8 @@ pub(super) fn vertical(
         return false;
     }
     let mut parents: Vec<_> = (0..layout.nodes.len()).collect();
-    if !options.direction.unwrap_or(graph.direction).horizontal() {
+    let horizontal = options.direction.unwrap_or(graph.direction).horizontal();
+    if !horizontal {
         // Preserve the common center of boxes in a layer, including boxes of
         // different heights. Only the space between layers should shrink.
         for node in 0..ranks.len() {
@@ -158,13 +159,53 @@ pub(super) fn vertical(
         }
     }
     let mut constraints = vec![Vec::new(); parents.len()];
+    if !horizontal {
+        let mut bands: Vec<Option<Feature>> = vec![None; parents.len()];
+        for feature in features.iter().filter(|feature| feature.node) {
+            if let Some(band) = &mut bands[feature.group] {
+                band.top = band.top.min(feature.top);
+                band.bottom = band.bottom.max(feature.bottom);
+            } else {
+                bands[feature.group] = Some(*feature);
+            }
+        }
+        let mut bands: Vec<_> = bands.into_iter().flatten().collect();
+        bands.sort_unstable_by_key(|band| band.top);
+        for pair in bands.windows(2) {
+            let (upper, lower) = (pair[0], pair[1]);
+            let Some(slack) = lower
+                .top
+                .checked_sub(upper.bottom + options.vertical_gap() + 1)
+            else {
+                return false;
+            };
+            constraints[upper.group].push((lower.group, slack));
+        }
+    }
     // Vertical stems connect features in their endpoint columns. Preserving
     // the order of all features in each column also preserves those crossings.
     for column in &mut columns {
         column.sort_unstable_by_key(|&i| (features[i].top, features[i].bottom, features[i].group));
         let mut previous: Option<Feature> = None;
+        let mut previous_node: Option<Feature> = None;
         for &i in column.iter() {
             let current = features[i];
+            // Routing features can sit between two boxes. Constrain the boxes
+            // directly as well so packing never consumes their requested gap.
+            if horizontal && current.node {
+                if let Some(upper) = previous_node
+                    && upper.group != current.group
+                {
+                    let Some(slack) = current
+                        .top
+                        .checked_sub(upper.bottom + options.vertical_gap() + 1)
+                    else {
+                        return false;
+                    };
+                    constraints[upper.group].push((current.group, slack));
+                }
+                previous_node = Some(current);
+            }
             if let Some(upper) = &mut previous {
                 if upper.group == current.group {
                     upper.bottom = upper.bottom.max(current.bottom);

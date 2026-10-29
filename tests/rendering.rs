@@ -109,11 +109,7 @@ fn connected_nodes_respect_gap_and_port_clearance() {
             } else {
                 canvas.height() - 2 * node.height()
             };
-            let minimum = if !direction.horizontal() && gap == 0 {
-                0
-            } else {
-                2
-            };
+            let minimum = if direction.horizontal() { 2 } else { 0 };
             assert_eq!(
                 actual,
                 gap.max(minimum),
@@ -168,11 +164,7 @@ fn simple_labeled_connections_only_expand_to_fit_the_label_and_its_ports() {
             } else {
                 (canvas.height() - 2 * node.height(), 1)
             };
-            let clearance = if !direction.horizontal() && gap == 0 {
-                0
-            } else {
-                4
-            };
+            let clearance = if direction.horizontal() { 4 } else { 0 };
             assert_eq!(
                 actual,
                 gap.max(label_size + clearance),
@@ -293,7 +285,13 @@ fn graph_labels_share_the_connector_center_in_every_direction() {
             let label_x = rows[y][..rows[y].find("🭮█").unwrap()].width();
             assert_eq!(label_x + "🭮█label█🭬".width() / 2, connector_x, "{text}");
             for row in [rows[y - 1], rows[y + 1]] {
-                assert_eq!(row.chars().nth(connector_x), Some('│'), "{text}");
+                assert!(
+                    matches!(
+                        row.chars().nth(connector_x),
+                        Some('│' | '┬' | '┴' | '┸' | '┰')
+                    ),
+                    "{text}"
+                );
             }
         }
     }
@@ -410,11 +408,20 @@ fn compact_routing_preserves_wrapped_labels_styles_and_explicit_endings() {
             Border::Heavy,
             Border::Ascii,
         ] {
-            for padding in [0, 1] {
+            for (gap, padding) in [
+                (0, 0),
+                (0, 1),
+                (1, 0),
+                (1, 1),
+                (2, 0),
+                (2, 1),
+                (12, 0),
+                (12, 1),
+            ] {
                 let options = RenderOptions {
                     direction: Some(direction),
                     border,
-                    gap: 0,
+                    gap,
                     padding,
                     ..RenderOptions::default()
                 };
@@ -535,6 +542,58 @@ fn zero_vertical_gap_compacts_the_supplied_graph_after_routing() {
             diagram.counts().1,
             "{direction:?}: lost border junctions"
         );
+    }
+}
+
+#[test]
+fn vertical_gap_steps_keep_the_supplied_graph_compact() {
+    let diagram = parse(include_str!("../assets/example.mermaid")).unwrap();
+    let marazmatic::model::DiagramKind::Graph(graph) = &diagram.kind else {
+        unreachable!()
+    };
+    for direction in [Direction::Tb, Direction::Bt] {
+        let mut previous_height = None;
+        for gap in 0..=12 {
+            let canvas = render(
+                &diagram,
+                &RenderOptions {
+                    direction: Some(direction),
+                    gap: 0,
+                    vertical_gap: Some(gap),
+                    padding: 0,
+                    ..RenderOptions::default()
+                },
+            )
+            .unwrap();
+            if let Some(previous) = previous_height {
+                assert!(
+                    canvas.height() < previous + diagram.counts().0,
+                    "{direction:?}: gap {} -> {gap} grew from {previous} to {} rows",
+                    gap - 1,
+                    canvas.height()
+                );
+            }
+            let text = canvas.to_text(false, false, Theme::Mono);
+            assert_eq!(point_junctions(&text), diagram.counts().1);
+            for label in graph
+                .nodes
+                .iter()
+                .map(|node| &node.label)
+                .chain(graph.edges.iter().map(|edge| &edge.label))
+            {
+                for line in marazmatic::canvas::wrap(
+                    label,
+                    RenderOptions::default().node_width,
+                    marazmatic::canvas::Emphasis::default(),
+                ) {
+                    assert!(
+                        text.contains(&line.text()),
+                        "{direction:?}, gap {gap}: missing {label}"
+                    );
+                }
+            }
+            previous_height = Some(canvas.height());
+        }
     }
 }
 

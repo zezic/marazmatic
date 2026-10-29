@@ -83,7 +83,7 @@ Diagrams are centered in the available viewport by default, including after resi
 
 Horizontal and vertical spacing can each be adjusted from 0–12. `--gap` sets both defaults; `--horizontal-gap` and `--vertical-gap` override their respective axes in live and one-shot rendering. The axes always refer to screen columns and rows, including after changing graph direction. For graphs, these values measure the minimum number of columns or rows between node borders. Labels and separate routing lanes may require more space. Sequence diagrams use horizontal spacing between participants and vertical spacing between messages.
 
-Zero graph spacing packs boxes within each layer and uses adjacent attachment points. A vertical gap of zero also removes rows that only extend vertical connections after routing and packs independent horizontal connections and labels onto shared rows, bringing boxes closer while retaining explicit circle/cross endings, bends, and crossings.
+Graphs remove rows that only extend vertical connections after routing and pack independent horizontal connections and labels onto shared rows, preserving the requested minimum vertical gap between node borders. This packing stays active across all gap values, retaining explicit circle/cross endings, bends, and crossings. Zero graph spacing also packs boxes within each layer and uses adjacent attachment points.
 
 Use `--padding 0` to remove horizontal padding inside node boxes, or press `p` in live mode to cycle through padding values 0–3. For example: `marazmatic live diagram.mmd --padding 0 --gap 0`.
 

@@ -1,6 +1,10 @@
 //! A cell canvas shared by the renderer, ANSI exporter, and live viewport.
 //! Grapheme clusters occupy terminal columns, not UTF-8 bytes or scalar values.
 
+use std::{
+    cmp::Reverse,
+    collections::{BinaryHeap, HashSet},
+};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -289,25 +293,76 @@ impl Canvas {
             && (y..y + height).all(|row| (x..x + width).all(|col| self.is_blank(col, row)))
     }
 
-    /// Close unused vertical space after graph routing. Disjoint horizontal
-    /// runs can share a row when their connecting vertical stems stay separate.
-    pub(crate) fn compact_vertical(mut self) -> Self {
+    // Each interval bounds how many rows can be removed between consecutive
+    // boxes or layers. Repeated column constraints share the same interval.
+    fn vertical_gap_constraints(&self, gap: usize) -> Vec<Vec<(usize, usize)>> {
+        let mut starts = vec![Vec::new(); self.height];
+        if gap == 0 {
+            return starts;
+        }
+        let mut above: Vec<Option<(usize, usize)>> = vec![None; self.width];
+        let mut intervals = HashSet::new();
+        let mut previous_node_row: Option<usize> = None;
+        for (y, row) in self.cells.chunks(self.width).enumerate() {
+            // Consecutive layers may have no boxes in a common column.
+            if row.iter().any(|cell| matches!(cell.role, Role::Node(_))) {
+                if let Some(upper) = previous_node_row
+                    && y > upper + 1
+                    && intervals.insert((upper, y))
+                {
+                    starts[upper + 1].push((y, (y - upper - 1).saturating_sub(gap)));
+                }
+                previous_node_row = Some(y);
+            }
+            for (x, cell) in row.iter().enumerate() {
+                if let Role::Node(node) = cell.role {
+                    if let Some((previous, upper)) = above[x]
+                        && previous != node
+                        && intervals.insert((upper, y))
+                    {
+                        starts[upper + 1].push((y, (y - upper - 1).saturating_sub(gap)));
+                    }
+                    above[x] = Some((node, y));
+                }
+            }
+        }
+        starts
+    }
+
+    /// Close unused vertical space after graph routing, preserving the minimum
+    /// gap between node borders. Disjoint horizontal runs can share a row when
+    /// their connecting vertical stems stay separate.
+    pub(crate) fn compact_vertical(mut self, gap: usize) -> Self {
+        let starts = self.vertical_gap_constraints(gap);
+        let mut limits = BinaryHeap::new();
+        let mut removed = 0;
         let mut packed: Vec<Cell> = Vec::with_capacity(self.cells.len());
         let mut previous_edges = false;
-        for row in self.cells.chunks(self.width) {
+        for (y, row) in self.cells.chunks(self.width).enumerate() {
+            for &(end, slack) in &starts[y] {
+                limits.push(Reverse((removed + slack, end)));
+            }
+            while limits.peek().is_some_and(|&Reverse((_, end))| end <= y) {
+                limits.pop();
+            }
+            let can_remove = limits
+                .peek()
+                .is_none_or(|&Reverse((limit, _))| removed < limit);
             let edges = row.iter().all(|cell| {
                 cell.glyph.trim().is_empty()
                     && !cell.continuation
                     && (cell.connections == 0 || cell.role == Role::Edge)
             });
-            if edges
+            if can_remove
+                && edges
                 && row
                     .iter()
                     .all(|cell| cell.connections & (LEFT | RIGHT) == 0)
             {
+                removed += 1;
                 continue;
             }
-            if edges && previous_edges {
+            if can_remove && edges && previous_edges {
                 let start = packed.len() - self.width;
                 let previous = &mut packed[start..];
                 let compatible = previous.iter().zip(row).all(|(upper, lower)| {
@@ -334,6 +389,7 @@ impl Canvas {
                         upper.connections = connections;
                         upper.heavy_connections = heavy;
                     }
+                    removed += 1;
                     continue;
                 }
             }
@@ -637,6 +693,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn vertical_compaction_preserves_gaps_between_staggered_nodes() {
+        let mut canvas = Canvas::new(10, 16, Border::Rounded);
+        for (i, (x, y)) in [(0, 0), (0, 7), (6, 4), (6, 12)].into_iter().enumerate() {
+            canvas.rect(x, y, 3, 3, Role::Node(i), Border::Rounded);
+        }
+        canvas.line((1, 3), (1, 6), Role::Edge, Stroke::Solid);
+        canvas.line((7, 7), (7, 11), Role::Edge, Stroke::Solid);
+        for gap in 0..=4 {
+            let packed = canvas.clone().compact_vertical(gap);
+            let bounds: Vec<_> = (0..4)
+                .map(|node| {
+                    let rows: Vec<_> = packed
+                        .cells
+                        .chunks(packed.width)
+                        .enumerate()
+                        .filter(|(_, row)| row.iter().any(|cell| cell.role == Role::Node(node)))
+                        .map(|(y, _)| y)
+                        .collect();
+                    assert_eq!(rows.len(), 3, "gap {gap}: box height changed");
+                    (rows[0], rows[2])
+                })
+                .collect();
+            for (upper, lower) in [(0, 1), (2, 3)] {
+                let actual_gap = bounds[lower].0 - bounds[upper].1 - 1;
+                assert!(
+                    actual_gap >= gap,
+                    "gap {gap}: only {actual_gap} rows remain"
+                );
+            }
+            assert!(
+                packed.height() < canvas.height(),
+                "unused outer rows remain"
+            );
+        }
+    }
+
+    #[test]
     fn vertical_compaction_preserves_edge_styles_and_existing_crossings() {
         for (first, second) in [
             (Stroke::Solid, Stroke::Solid),
@@ -656,7 +749,7 @@ mod tests {
             if first == second {
                 canvas.line((7, 0), (7, 3), Role::Edge, first);
             }
-            let canvas = canvas.compact_vertical();
+            let canvas = canvas.compact_vertical(0);
             let text = canvas.to_text(false, false, Theme::Mono);
             assert_eq!(canvas.height(), 3, "{text}");
             if first == second {
@@ -683,7 +776,9 @@ mod tests {
         }
         let original = canvas.to_text(false, false, Theme::Mono);
         assert_eq!(
-            canvas.compact_vertical().to_text(false, false, Theme::Mono),
+            canvas
+                .compact_vertical(0)
+                .to_text(false, false, Theme::Mono),
             original
         );
     }
@@ -697,7 +792,9 @@ mod tests {
             canvas.text(10, 1, glyph, role, Emphasis::ITALIC);
             let original = canvas.to_text(false, false, Theme::Mono);
             assert_eq!(
-                canvas.compact_vertical().to_text(false, false, Theme::Mono),
+                canvas
+                    .compact_vertical(0)
+                    .to_text(false, false, Theme::Mono),
                 original
             );
         }

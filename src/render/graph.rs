@@ -538,16 +538,12 @@ pub(super) fn render(graph: &Graph, options: &RenderOptions) -> Result<Canvas, R
     for (p, direction, marker) in markers {
         arrow(&mut canvas, p, direction, marker, options);
     }
-    Ok(if options.vertical_gap() == 0 {
-        layout.routes = paths.iter().map(|path| simplify::compact(path)).collect();
-        layout.label_anchors = label_anchors;
-        if pack::vertical(&mut layout, graph, options, &layout::ranks(graph)) {
-            canvas = paint(&layout, graph, options, &order)?;
-        }
-        canvas.compact_vertical()
-    } else {
-        canvas
-    })
+    layout.routes = paths.iter().map(|path| simplify::compact(path)).collect();
+    layout.label_anchors = label_anchors;
+    if pack::vertical(&mut layout, graph, options, &layout::ranks(graph)) {
+        canvas = paint(&layout, graph, options, &order)?;
+    }
+    Ok(canvas.compact_vertical(options.vertical_gap()))
 }
 
 fn paint(
